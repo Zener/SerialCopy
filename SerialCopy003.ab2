@@ -1,0 +1,378 @@
+
+WBStartup
+DEFTYPE .w
+
+bauds.l = 9600
+#OP_BYTES = 64
+
+#MASTER = -1
+#SLAVE = 0
+#IO_WAIT = 10
+
+#BANK_SIZE = 16*1024
+InitBank 0, #BANK_SIZE, 1
+InitBank 1, #BANK_SIZE, 1
+
+MaxLen path$ = 192
+MaxLen filename$ = 192
+MaxLen ffilename$ = 192
+
+
+NEWTYPE .packet
+    filename$
+    filenameSize.b
+    size.l
+    packetId.w
+    crc32.l
+End NEWTYPE
+
+;If NumPars > 1
+  ; operation file speed
+;EndIf
+
+
+Function SendName{name$}
+    SHARED bauds
+    ;shared filename$
+
+    result = False
+    FlushSerialIO
+    VWait #IO_WAIT
+
+    a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+    If a
+
+        Print "Sending name ("+name$+ ") ..."
+        For i=1 To Len(name$)
+            Poke.b (Bank(1) + (i - 1)), Asc( Mid$(name$, i, 1) )
+        Next
+        Poke.b Bank(1) + i - 1, 0
+
+        DoSerialIO 192-1
+        FinitSerialIO
+        FlushSerialIO
+
+        NPrint" DONE"
+        VWait #IO_WAIT
+                                                                                                                        
+        result = True
+    EndIf
+
+    Function Return result
+End Function
+
+Function ReceiveName{}
+    SHARED bauds
+    SHARED filename$
+
+    FlushSerialIO
+    VWait #IO_WAIT
+    result = False
+    Print "Receiving file name "
+    a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+    If a
+        Print "..."
+        DoSerialIO 192 - 1
+        FinitSerialIO
+        FlushSerialIO
+        VWait #IO_WAIT
+        i = 0
+        filename$ = ""
+        char.b = Peek.b(Bank(0))
+        While char <> 0 AND i < 192
+            ;Print Chr$(char)
+            filename$ = filename$ + Chr$(char)
+            i = i + 1
+            char.b = Peek.b(Bank(0) +i )
+        Wend
+        NPrint "DONE. File name is ", filename$
+        result = True
+    EndIf
+
+    Function Return result
+End Function
+
+Function SendSize{size.l}
+    SHARED bauds
+
+    result = False
+    FlushSerialIO
+    VWait #IO_WAIT
+    a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+    If a
+        Print "Sending size (",size,") ..."
+        Poke.l Bank(1), 0
+        Poke.l Bank(1), size
+        size = Peek.l(Bank(1))
+        ;NPrint "size sent is",size
+
+        ;FlushSerialIO
+        DoSerialIO #OP_BYTES-1
+        FinitSerialIO
+        FlushSerialIO
+        VWait #IO_WAIT
+        NPrint " DONE"
+        result = True
+    EndIf
+    Function Return result
+End Function
+
+Function ReceiveSize{}
+    SHARED bauds
+    SHARED size.l
+
+    result = False
+    Print "Receiving size "
+
+    Poke.l Bank(0), 0
+
+    FlushSerialIO
+    VWait #IO_WAIT
+    a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+    If a
+        Print "..."
+        ;FlushSerialIO
+        DoSerialIO #OP_BYTES - 1
+        FinitSerialIO
+        FlushSerialIO
+        VWait #IO_WAIT
+        size.l = Peek.l(Bank(0))
+        NPrint "DONE. File size is ", size
+        result = True
+    EndIf
+
+    Function Return result
+End Function
+
+
+Function SendFile{ffilename$, size.l}
+    SHARED bauds
+
+    result = False
+    FlushSerialIO
+    VWait #IO_WAIT
+    a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+    If a
+        Print "Sending file ...";,ffilename$
+        LoadBank 1, ffilename$
+        DoSerialIO size - 1
+        FinitSerialIO
+        FlushSerialIO
+        VWait #IO_WAIT
+        NPrint "DONE"
+        result = True
+    EndIf
+
+    Function Return result
+End Function
+
+Function ReceiveFile{filename$, size.l}
+    SHARED bauds
+
+    result = False
+    FlushSerialIO
+    VWait #IO_WAIT
+    a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+    If a
+        Print "Receiving file ..."
+        DoSerialIO size - 1
+        FinitSerialIO
+        FlushSerialIO
+        VWait #IO_WAIT
+        NPrint "DONE"
+        Print "Writing to " + filename$
+        output.l = WriteFile(0,filename$)
+        If output
+            WriteMem 0, Bank(0), size
+            NPrint "DONE"
+            result = True
+        EndIf
+        CloseFile 0
+
+        ;SaveBank 0, "ram:received"
+    EndIf
+    Function Return result
+End Function
+
+Function SendFileFraq{ffilename$, size.l}
+    SHARED bauds
+
+    result = False
+    Print "Sending file ...";,ffilename$
+    a.l = ReadFile (1, ffilename$)
+
+    FlushSerialIO
+    VWait #IO_WAIT
+    If a
+        FileInput 1
+        finished = False
+        restToRead.l = size;Lof(1)
+
+
+        Repeat
+            sizeToRead.l = restToRead
+            If sizeToRead > #BANK_SIZE
+                sizeToRead = #BANK_SIZE
+            Else
+                finished = True
+            EndIf
+            Print "R"
+            ReadMem 1, Bank(1), sizeToRead
+            ;Print "2"
+
+            a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+            If a
+                Print "S"
+                DoSerialIO sizeToRead - 1
+                FinitSerialIO
+                FlushSerialIO
+                VWait #IO_WAIT
+                ;Print "4"
+                restToRead - sizeToRead
+            EndIf
+        Until finished
+        NPrint "DONE"
+        result = True
+    EndIf
+    ;LoadBank 1, ffilename$
+    Function Return result
+End Function
+
+Function ReceiveFileFraq{filename$, size.l}
+    SHARED bauds
+
+    result = False
+
+    output.l = WriteFile(0, filename$)
+    finished = False
+    Print "Receiving file ..."
+    restToRead.l  = size
+    FlushSerialIO
+    VWait #IO_WAIT
+
+    If output
+        Repeat
+
+            sizeToRead.l = restToRead
+            If sizeToRead > #BANK_SIZE
+                sizeToRead = #BANK_SIZE
+            Else
+                finished = True
+            EndIf
+            a.l = InitSerialIO (bauds, #OP_BYTES, Bank(0), Bank(1))
+            If a
+                DoSerialIO sizeToRead - 1
+                FinitSerialIO
+                FlushSerialIO
+                VWait #IO_WAIT
+                Print "R"
+                WriteMem 0, Bank(0), sizeToRead
+                Print "W"
+                restToRead - sizeToRead
+            EndIf
+
+        Until finished
+        NPrint "DONE"
+        result = True
+        CloseFile 0
+    Else
+        NPrint "Cannot open destination file: "+filename$
+    EndIf
+    Function Return result
+End Function
+
+
+
+WbToScreen 0
+Use Screen 0
+
+If NOT FromCLI
+    ;143f
+    Window 0,0,0,ScreenWidth,ScreenHeight/2,$143f,"Serial Copy",1,2,0
+    Use Window 0
+EndIf
+
+
+NPrint "Serial Copy V1.0.0"
+
+Repeat
+    NPrint "Transfer speed is: ",bauds," bauds"
+    NPrint "(1) - Send"
+    NPrint "(2) - Receive"
+    NPrint "(3) - Set Speed to 9600 bauds"
+    NPrint "(4) - Set Speed to 19200 bauds"
+    NPrint "(5) - Set Speed to 31250 bauds"
+    NPrint "(0) - Quit"
+    Print "Type a number: "
+    operation = Edit(1)
+
+
+
+    FlushSerialIO
+    VWait #IO_WAIT
+
+    Select operation
+        Case 1
+            SetSerialMode #MASTER
+            ffilename$ = ASLFileRequest$("Select file to send", path$, filename$, "#?", 0, 0, 320, 200)
+            NPrint "Sending ", path$, "/", filename$
+
+            size.l = Exists(ffilename$)
+            If size > 0
+                If (SendName{filename$})
+                    If (SendSize{size})
+                        If SendFileFraq{ffilename$, size}
+                            NPrint"":NPrint "COMPLETED"
+                        EndIf
+                    EndIf
+                EndIf
+            EndIf
+
+        Case 2
+            SetSerialMode #SLAVE
+            path$="ram:"
+            ffilename$ = ASLPathRequest$("Select output folder", path$, 0, 0, 320, 200)
+            If Right$(path$, 1) <> ":" Then path$ + "/"
+            NPrint "Output path: ", path$
+            ;Stop
+            ;End
+            If ReceiveName{}
+                If ReceiveSize{}
+                    If ReceiveFileFraq{path$ + filename$, size}
+                        NPrint"":NPrint "COMPLETED"
+                    EndIf
+                EndIf
+            EndIf
+
+        Case 3
+            bauds = 9600
+        Case 4
+            bauds = 19200
+        Case 5
+            bauds = 31250
+        ;Default
+        ;    End
+    End Select
+Until operation = 0
+End
+    ;SetIOBuffers 0, 1  ;read in 0, write in 1
+
+
+
+;    GetSerial Bank(0), 16
+;    PutSerial Bank(1), 16
+
+
+
+;EndIf
+
+
+
+End
+
+
+;isMaster.b
+;SyncSerial(&isMaster)
+
+
+
